@@ -1,4 +1,6 @@
-const { SlashCommandBuilder, EmbedBuilder, ButtonBuilder, ActionRowBuilder, ButtonStyle } = require('discord.js');
+// commands/sendverifypanel.js
+
+const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
 const GuildConfig = require('../models/guildConfig');
 
 module.exports = {
@@ -7,36 +9,41 @@ module.exports = {
         .setDescription('Send the verification panel to a specified channel')
         .addChannelOption(option =>
             option.setName('channel')
-                .setDescription('The channel to send the verification panel')
-                .setRequired(true)),
+                .setDescription('The channel to send the verification panel to')
+                .setRequired(true))
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator), // Restrict to admins
     async execute(interaction) {
-        // Check if the user has permission to manage the server
-        if (!interaction.member.permissions.has('Administrator')) {
+        // Check for Administrator permission
+        if (!interaction.member.permissions.has(PermissionFlagsBits.Administrator)) {
             await interaction.reply({ content: 'You do not have permission to use this command.', ephemeral: true });
-            return;
-        }
-
-        const guildConfig = await GuildConfig.findOne({ guildId: interaction.guild.id });
-        if (!guildConfig) {
-            await interaction.reply({ content: 'Please configure the bot using `/config` command before sending the verification panel.', ephemeral: true });
             return;
         }
 
         const channel = interaction.options.getChannel('channel');
 
-        const embed = new EmbedBuilder()
-            .setTitle('Verification')
-            .setDescription(guildConfig.panelMessage)
-            .setColor('Red');
+        // Fetch the guild configuration
+        const guildConfig = await GuildConfig.findOne({ guildId: interaction.guild.id });
+        if (!guildConfig) {
+            await interaction.reply({ content: 'The bot is not configured for this server. Please use the /config command first.', ephemeral: true });
+            return;
+        }
 
-        const button = new ButtonBuilder()
-            .setCustomId(`verify_button_${guildConfig.timer}`)
+        // Create the verification panel
+        const { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require('discord.js');
+
+        const verifyButton = new ButtonBuilder()
+            .setCustomId('verify_button')
             .setLabel('Verify')
             .setStyle(ButtonStyle.Primary);
 
-        const row = new ActionRowBuilder().addComponents(button);
+        const row = new ActionRowBuilder().addComponents(verifyButton);
+
+        const embed = new EmbedBuilder()
+            .setTitle('Verification')
+            .setDescription(guildConfig.panelMessage)
+            .setColor(0x00AE86);
 
         await channel.send({ embeds: [embed], components: [row] });
-        await interaction.reply({ content: 'Verification panel has been set up.', ephemeral: true });
+        await interaction.reply({ content: 'Verification panel has been sent.', ephemeral: true });
     },
 };
