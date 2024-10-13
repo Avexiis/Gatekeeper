@@ -16,10 +16,12 @@ A Discord bot that provides CAPTCHA-based verification for new members across mu
 
 - CAPTCHA-based verification system to prevent bots and spam accounts.
 - Configurable verification panel with custom messages and timer durations.
+- Assign multiple roles upon successful verification.
 - Supports multiple servers with individual configurations.
 - Stores data in MongoDB for scalability and reliability.
 - Logs verification events with user and server details.
 - Automatically deletes temporary CAPTCHA images after use or expiration.
+- Displays bot status as "Watching over x users" across all servers.
 
 ## Prerequisites
 
@@ -27,7 +29,7 @@ Before installing the bot, ensure you have the following installed on your syste
 
 - [Node.js](https://nodejs.org/) (v16.9.0 or newer)
 - [npm](https://www.npmjs.com/get-npm) (comes with Node.js)
-- [MongoDB](https://www.mongodb.com/try/download/community) (local instance)
+- [MongoDB Community Server](https://www.mongodb.com/try/download/community) (local instance)
 - [Visual Studio Build Tools 2022](https://visualstudio.microsoft.com/downloads/) (required for compiling native modules like Canvas on Windows)
 
 ## Installation
@@ -38,7 +40,7 @@ Follow these steps to install and run the Gatekeeper Discord Bot:
 
 ```bash
 git clone https://github.com/Avexiis/Gatekeeper.git
-cd gatekeeper
+cd Gatekeeper
 ```
 
 ### 2. Install Dependencies
@@ -100,7 +102,7 @@ const clientId = 'YOUR_CLIENT_ID'; // Replace 'YOUR_CLIENT_ID' with your actual 
 - Replace `'YOUR_BOT_TOKEN'` with your actual Discord bot token.
 - Replace `'YOUR_CLIENT_ID'` with your bot's client ID.
 
-### 6. Install Required Discord Bot Permissions and Intents
+### 6. Set Up Discord Bot Permissions and Intents
 
 In the [Discord Developer Portal](https://discord.com/developers/applications):
 
@@ -122,12 +124,19 @@ Generate an OAuth2 URL in the Developer Portal with the appropriate scopes and p
 Use the `/config` command to set up the verification settings for your server.
 
 ```bash
-/config verifiedrole:@Verified panelmessage:"Please verify yourself to access the server." timer:3
+/config role1:@Verified panelmessage:"Please verify yourself to access the server." timer:3
 ```
 
-- **`verifiedrole`**: The role to assign upon successful verification.
+- **`role1`**: (Required) The first role to assign upon successful verification.
+- **`role2`** to **`role5`**: (Optional) Additional roles to assign upon verification.
 - **`panelmessage`**: The message displayed on the verification panel.
 - **`timer`**: CAPTCHA expiration time in minutes.
+
+**Example with Multiple Roles:**
+
+```bash
+/config role1:@Member role2:@Gamer role3:@Artist panelmessage:"Welcome! Please verify to join the community." timer:5
+```
 
 ### 3. Send the Verification Panel
 
@@ -137,6 +146,8 @@ Use the `/sendverifypanel` command to send the verification panel to a specific 
 /sendverifypanel channel:#verification
 ```
 
+- **`channel`**: The channel where the verification panel will be sent.
+
 ## Usage
 
 The bot provides a CAPTCHA-based verification process for new members:
@@ -145,10 +156,11 @@ The bot provides a CAPTCHA-based verification process for new members:
 2. The user clicks the **"Verify"** button.
 3. The bot sends an ephemeral message with a CAPTCHA image and two buttons: **"Answer"** and **"New CAPTCHA"**.
    - **"Answer"**: Opens a modal where the user can enter the CAPTCHA text.
-   - **"New CAPTCHA"**: Generates a new CAPTCHA image.
+   - **"New CAPTCHA"**: Generates a new CAPTCHA image, deletes the old one, and resets the timer.
 4. The user enters the correct CAPTCHA text within the specified time limit.
-5. Upon successful verification, the bot assigns the configured verified role to the user.
+5. Upon successful verification, the bot assigns the configured role(s) to the user.
 6. The bot logs the verification event, including the user and server details.
+7. The bot updates its status to reflect the total number of users it's watching over.
 
 ## Commands
 
@@ -159,13 +171,16 @@ Configure the verification settings for your server.
 - **Usage**:
 
   ```bash
-  /config verifiedrole:@Verified panelmessage:"Please verify yourself to access the server." timer:3
+  /config role1:@Verified panelmessage:"Please verify yourself to access the server." timer:3
   ```
 
 - **Parameters**:
-  - `verifiedrole`: The role to assign upon verification.
-  - `panelmessage`: The message displayed on the verification panel.
-  - `timer`: CAPTCHA expiration time in minutes.
+  - `role1` (Required): The first role to assign upon verification.
+  - `role2` to `role5` (Optional): Additional roles to assign upon verification.
+  - `panelmessage` (Required): The message displayed on the verification panel.
+  - `timer` (Required): CAPTCHA expiration time in minutes.
+
+**Note:** All required options (`role1`, `panelmessage`, `timer`) must be placed before optional options (`role2`, `role3`, etc.) when using the command.
 
 ### `/sendverifypanel`
 
