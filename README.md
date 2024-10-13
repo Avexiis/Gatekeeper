@@ -38,7 +38,7 @@ Follow these steps to install and run the Gatekeeper Discord Bot:
 
 ```bash
 git clone https://github.com/Avexiis/Gatekeeper.git
-cd gatekeeper-discord-bot
+cd gatekeeper
 ```
 
 ### 2. Install Dependencies
