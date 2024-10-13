@@ -8,6 +8,7 @@ const {
     InteractionType,
     ButtonBuilder,
     ButtonStyle,
+    PermissionFlagsBits,
 } = require('discord.js');
 const { unlink } = require('fs/promises');
 const Captcha = require('../models/captcha');
@@ -40,8 +41,9 @@ module.exports = {
                     return;
                 }
 
-                // Check if the user already has the verified role
-                if (member.roles.cache.has(guildConfig.verifiedRoleId)) {
+                // Check if the user already has any of the verified roles
+                const hasVerifiedRole = guildConfig.verifiedRoleIds.some(roleId => member.roles.cache.has(roleId));
+                if (hasVerifiedRole) {
                     await interaction.reply({ content: 'You are already verified.', ephemeral: true });
                     return;
                 }
@@ -254,7 +256,8 @@ module.exports = {
                 await Captcha.deleteOne({ userId: interaction.user.id });
 
                 try {
-                    await interaction.member.roles.add(guildConfig.verifiedRoleId);
+                    // Assign all verified roles to the member
+                    await interaction.member.roles.add(guildConfig.verifiedRoleIds);
                     await interaction.reply({ content: 'You have been verified!', ephemeral: true });
 
                     // Log the verification event
@@ -268,13 +271,12 @@ module.exports = {
                     await verificationLog.save();
 
                     console.log(`User ${interaction.user.tag} has been verified in server "${interaction.guild.name}" (ID: ${interaction.guild.id})`);
-
                 } catch (error) {
                     if (error.code === 50013) {
-                        await interaction.reply({ content: 'I do not have permission to assign the verified role. Please contact a server administrator.', ephemeral: true });
+                        await interaction.reply({ content: 'I do not have permission to assign the verified roles. Please contact a server administrator.', ephemeral: true });
                     } else {
-                        console.error('Failed to assign role:', error);
-                        await interaction.reply({ content: 'An error occurred while assigning your role. Please try again later.', ephemeral: true });
+                        console.error('Failed to assign roles:', error);
+                        await interaction.reply({ content: 'An error occurred while assigning your roles. Please try again later.', ephemeral: true });
                     }
                 }
             } else {
