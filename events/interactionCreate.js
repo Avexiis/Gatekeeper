@@ -35,7 +35,7 @@ async function isUserInGuild(guild, userId) {
 }
 
 // Retry request logic with user in guild check and active verification status
-async function retryRequest(func, interaction, maxAttempts = Infinity, delay = 1000) {
+async function retryRequest(func, interaction, maxAttempts = 5, delay = 2000) {
     let attempt = 0;
     const userId = interaction.user.id;
     const guild = interaction.guild;
@@ -75,6 +75,23 @@ async function retryRequest(func, interaction, maxAttempts = Infinity, delay = 1
             }
         }
     }
+
+    // Show Retry button if max attempts are exceeded
+    if (attempt >= maxAttempts) {
+        console.log(`Max retries exceeded for user ${interaction.user.tag}. Showing Retry button.`);
+        await interaction.reply({
+            content: 'The verification service is temporarily unavailable. Please click "Retry" to try again.',
+            ephemeral: true,
+            components: [
+                new ActionRowBuilder().addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('retry_captcha')
+                        .setLabel('Retry')
+                        .setStyle(ButtonStyle.Primary)
+                )
+            ]
+        });
+    }
     throw new Error('Max retries exceeded, user left, or user has been verified');
 }
 
@@ -101,7 +118,7 @@ async function showCaptchaModalWithRetry(interaction, modal) {
         userRetries.count++;
         userRetries.lastAttempt = Date.now();
 
-        await retryRequest(() => interaction.showModal(modal), interaction, Infinity, 2000); // Retry indefinitely if 503
+        await retryRequest(() => interaction.showModal(modal), interaction, retryLimit, 2000); // Limited retries
     } catch (error) {
         console.error('Failed to show CAPTCHA modal:', error);
         if (!isVerified) { // Only show retry button if the user is not verified
