@@ -16,6 +16,46 @@ const GuildConfig = require('../models/guildConfig');
 const VerificationLog = require('../models/verificationLog'); // Import the VerificationLog model
 const { generateCaptchaText, generateCaptchaImage } = require('../utils/captchaGenerator');
 
+async function retryRequest(func, maxAttempts = Infinity, delay = 1000) {
+    let attempt = 0;
+    while (attempt < maxAttempts) {
+        try {
+            return await func(); // Try executing the passed function
+        } catch (error) {
+            attempt++;
+            console.error(`Attempt ${attempt} failed, retrying...`, error);
+
+            // For API unavailability or other retryable errors (503)
+            if (error.status === 503) {
+                await new Promise(resolve => setTimeout(resolve, delay)); // Delay before retry
+            } else {
+                throw error; // Non-retryable errors, throw them out
+            }
+        }
+    }
+    throw new Error('Max retries exceeded');
+}
+
+async function showCaptchaModalWithRetry(interaction, modal) {
+    try {
+        await retryRequest(() => interaction.showModal(modal), Infinity, 2000); // Retry indefinitely if 503
+    } catch (error) {
+        console.error('Failed to show CAPTCHA modal:', error);
+        await interaction.reply({
+            content: 'The verification service is currently unavailable. Please click "Retry" to try again.',
+            ephemeral: true,
+            components: [
+                new ActionRowBuilder().addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('retry_captcha')
+                        .setLabel('Retry')
+                        .setStyle(ButtonStyle.Primary)
+                )
+            ]
+        });
+    }
+}
+
 module.exports = {
     name: 'interactionCreate',
     async execute(interaction, client) {
@@ -218,7 +258,17 @@ module.exports = {
                 const row = new ActionRowBuilder().addComponents(captchaInput);
                 modal.addComponents(row);
 
-                await interaction.showModal(modal);
+                await showCaptchaModalWithRetry(interaction, modal);
+            }
+
+            // Handle "Retry" button
+            else if (interaction.customId === 'retry_captcha') {
+                const modal = new ModalBuilder()
+                    .setCustomId('captcha_modal')
+                    .setTitle('CAPTCHA Verification');
+
+                // Trigger the CAPTCHA modal again with retry logic
+                await showCaptchaModalWithRetry(interaction, modal);
             }
         }
 
