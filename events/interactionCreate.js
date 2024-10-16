@@ -1,3 +1,101 @@
+// events/interactionCreate.js
+
+const {
+    ModalBuilder,
+    TextInputBuilder,
+    TextInputStyle,
+    ActionRowBuilder,
+    InteractionType,
+    ButtonBuilder,
+    ButtonStyle,
+    PermissionFlagsBits,
+} = require('discord.js');
+const { unlink } = require('fs/promises');
+const Captcha = require('../models/captcha');
+const GuildConfig = require('../models/guildConfig');
+const VerificationLog = require('../models/verificationLog'); // Import the VerificationLog model
+const { generateCaptchaText, generateCaptchaImage } = require('../utils/captchaGenerator');
+
+let isVerified = false; // Global flag to track if the user has been verified
+let activeVerification = {}; // Object to track active verification sessions per user
+
+// Function to check if the user is still in the guild
+async function isUserInGuild(guild, userId) {
+    try {
+        const member = await guild.members.fetch(userId);
+        return !!member;
+    } catch (error) {
+        return false; // User is no longer in the guild
+    }
+}
+
+// Retry request logic with user in guild check and active verification status
+async function retryRequest(func, interaction, maxAttempts = Infinity, delay = 1000) {
+    let attempt = 0;
+    const userId = interaction.user.id;
+    const guild = interaction.guild;
+
+    while (attempt < maxAttempts && !isVerified && activeVerification[userId]) {
+        // Check if user is still in the server
+        const isInGuild = await isUserInGuild(guild, userId);
+        if (!isInGuild) {
+            console.log(`User ${interaction.user.tag} left the server. Stopping retries.`);
+            delete activeVerification[userId]; // Remove from active verification
+            return; // Stop retrying if the user left the server
+        }
+
+        try {
+            // Check if the user has already been verified
+            const guildConfig = await GuildConfig.findOne({ guildId: interaction.guild.id });
+            if (!guildConfig) return;
+
+            const hasVerifiedRole = guildConfig.verifiedRoleIds.some(roleId => interaction.member.roles.cache.has(roleId));
+            if (hasVerifiedRole) {
+                console.log(`User ${interaction.user.tag} is already verified. Stopping retries.`);
+                isVerified = true; // Set verified flag to true
+                delete activeVerification[userId]; // Remove from active verification
+                return; // Stop retrying
+            }
+
+            return await func(); // Try executing the passed function
+        } catch (error) {
+            attempt++;
+            console.error(`Attempt ${attempt} failed, retrying...`, error);
+
+            // For API unavailability or other retryable errors (503)
+            if (error.status === 503 && !isVerified) {
+                await new Promise(resolve => setTimeout(resolve, delay)); // Delay before retry
+            } else {
+                throw error; // Non-retryable errors, throw them out
+            }
+        }
+    }
+    throw new Error('Max retries exceeded, user left, or user has been verified');
+}
+
+// Function to show CAPTCHA modal with retry logic
+async function showCaptchaModalWithRetry(interaction, modal) {
+    try {
+        await retryRequest(() => interaction.showModal(modal), interaction, Infinity, 2000); // Retry indefinitely if 503
+    } catch (error) {
+        console.error('Failed to show CAPTCHA modal:', error);
+        if (!isVerified) { // Only show retry button if the user is not verified
+            await interaction.reply({
+                content: 'The verification service is currently unavailable. Please click "Retry" to try again.',
+                ephemeral: true,
+                components: [
+                    new ActionRowBuilder().addComponents(
+                        new ButtonBuilder()
+                            .setCustomId('retry_captcha')
+                            .setLabel('Retry')
+                            .setStyle(ButtonStyle.Primary)
+                    )
+                ]
+            });
+        }
+    }
+}
+
 module.exports = {
     name: 'interactionCreate',
     async execute(interaction, client) {
