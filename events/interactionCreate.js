@@ -1,61 +1,3 @@
-// events/interactionCreate.js
-
-const {
-    ModalBuilder,
-    TextInputBuilder,
-    TextInputStyle,
-    ActionRowBuilder,
-    InteractionType,
-    ButtonBuilder,
-    ButtonStyle,
-    PermissionFlagsBits,
-} = require('discord.js');
-const { unlink } = require('fs/promises');
-const Captcha = require('../models/captcha');
-const GuildConfig = require('../models/guildConfig');
-const VerificationLog = require('../models/verificationLog'); // Import the VerificationLog model
-const { generateCaptchaText, generateCaptchaImage } = require('../utils/captchaGenerator');
-
-async function retryRequest(func, maxAttempts = Infinity, delay = 1000) {
-    let attempt = 0;
-    while (attempt < maxAttempts) {
-        try {
-            return await func(); // Try executing the passed function
-        } catch (error) {
-            attempt++;
-            console.error(`Attempt ${attempt} failed, retrying...`, error);
-
-            // For API unavailability or other retryable errors (503)
-            if (error.status === 503) {
-                await new Promise(resolve => setTimeout(resolve, delay)); // Delay before retry
-            } else {
-                throw error; // Non-retryable errors, throw them out
-            }
-        }
-    }
-    throw new Error('Max retries exceeded');
-}
-
-async function showCaptchaModalWithRetry(interaction, modal) {
-    try {
-        await retryRequest(() => interaction.showModal(modal), Infinity, 2000); // Retry indefinitely if 503
-    } catch (error) {
-        console.error('Failed to show CAPTCHA modal:', error);
-        await interaction.reply({
-            content: 'The verification service is currently unavailable. Please click "Retry" to try again.',
-            ephemeral: true,
-            components: [
-                new ActionRowBuilder().addComponents(
-                    new ButtonBuilder()
-                        .setCustomId('retry_captcha')
-                        .setLabel('Retry')
-                        .setStyle(ButtonStyle.Primary)
-                )
-            ]
-        });
-    }
-}
-
 module.exports = {
     name: 'interactionCreate',
     async execute(interaction, client) {
@@ -72,178 +14,26 @@ module.exports = {
 
         // Handle button click for CAPTCHA verification
         else if (interaction.isButton()) {
+            const userId = interaction.user.id;
+
+            // Mark the user as actively verifying
+            activeVerification[userId] = true;
+
             if (interaction.customId.startsWith('verify_button')) {
                 const member = interaction.member;
                 const guildConfig = await GuildConfig.findOne({ guildId: interaction.guild.id });
 
                 if (!guildConfig) {
                     await interaction.reply({ content: 'Configuration not found. Please contact an administrator.', ephemeral: true });
-                    return;
-                }
-
-                // Check if the user already has any of the verified roles
-                const hasVerifiedRole = guildConfig.verifiedRoleIds.some(roleId => member.roles.cache.has(roleId));
-                if (hasVerifiedRole) {
-                    await interaction.reply({ content: 'You are already verified.', ephemeral: true });
+                    delete activeVerification[userId]; // End session if configuration fails
                     return;
                 }
 
                 const timer = guildConfig.timer;
-
-                // Check if the user already has an active CAPTCHA
-                const existingCaptcha = await Captcha.findOne({ userId: interaction.user.id });
-                if (existingCaptcha && Date.now() < existingCaptcha.expirationTime) {
-                    // Send the existing CAPTCHA
-                    const answerButton = new ButtonBuilder()
-                        .setCustomId('solve_captcha')
-                        .setLabel('Answer')
-                        .setStyle(ButtonStyle.Success);
-
-                    const newCaptchaButton = new ButtonBuilder()
-                        .setCustomId('new_captcha')
-                        .setLabel('New CAPTCHA')
-                        .setStyle(ButtonStyle.Secondary);
-
-                    const buttonRow = new ActionRowBuilder().addComponents(answerButton, newCaptchaButton);
-
-                    await interaction.reply({
-                        content: `You already have a CAPTCHA. You have ${Math.ceil((existingCaptcha.expirationTime - Date.now()) / 60000)} minutes remaining.`,
-                        files: [{ attachment: existingCaptcha.captchaPath }],
-                        components: [buttonRow],
-                        ephemeral: true,
-                    });
-                    return;
-                }
 
                 // Generate CAPTCHA
                 const captchaText = await generateCaptchaText(6);
                 const captchaPath = await generateCaptchaImage(captchaText);
-
-                // Store CAPTCHA in MongoDB
-                const expirationTime = Date.now() + timer * 60 * 1000;
-                await Captcha.findOneAndUpdate(
-                    { userId: interaction.user.id },
-                    { captchaText, expirationTime, captchaPath },
-                    { upsert: true }
-                );
-
-                // Set a timeout to delete the CAPTCHA after expiration
-                setTimeout(async () => {
-                    const expiredCaptcha = await Captcha.findOne({ userId: interaction.user.id });
-                    if (expiredCaptcha && Date.now() >= expiredCaptcha.expirationTime) {
-                        try {
-                            await unlink(expiredCaptcha.captchaPath);
-                        } catch (error) {
-                            console.error(`Failed to delete expired CAPTCHA image: ${error}`);
-                        }
-                        await Captcha.deleteOne({ userId: interaction.user.id });
-                    }
-                }, timer * 60 * 1000);
-
-                // Send CAPTCHA to user
-                const answerButton = new ButtonBuilder()
-                    .setCustomId('solve_captcha')
-                    .setLabel('Answer')
-                    .setStyle(ButtonStyle.Success);
-
-                const newCaptchaButton = new ButtonBuilder()
-                    .setCustomId('new_captcha')
-                    .setLabel('New CAPTCHA')
-                    .setStyle(ButtonStyle.Secondary);
-
-                const buttonRow = new ActionRowBuilder().addComponents(answerButton, newCaptchaButton);
-
-                await interaction.reply({
-                    content: `Press **"Answer"** to enter the CAPTCHA answer or **"New CAPTCHA"** to get a new one. You have ${timer} minutes to complete the CAPTCHA.`,
-                    files: [{ attachment: captchaPath }],
-                    components: [buttonRow],
-                    ephemeral: true,
-                });
-            }
-
-            // Handle "New CAPTCHA" button
-            else if (interaction.customId === 'new_captcha') {
-                const existingCaptcha = await Captcha.findOne({ userId: interaction.user.id });
-                const guildConfig = await GuildConfig.findOne({ guildId: interaction.guild.id });
-
-                if (!guildConfig) {
-                    await interaction.reply({ content: 'Configuration not found. Please contact an administrator.', ephemeral: true });
-                    return;
-                }
-
-                const timer = guildConfig.timer;
-
-                // Delete old CAPTCHA image and data
-                if (existingCaptcha) {
-                    try {
-                        await unlink(existingCaptcha.captchaPath);
-                    } catch (error) {
-                        console.error(`Failed to delete old CAPTCHA image: ${error}`);
-                    }
-                }
-
-                // Generate new CAPTCHA
-                const captchaText = await generateCaptchaText(6);
-                const captchaPath = await generateCaptchaImage(captchaText);
-
-                // Update CAPTCHA in MongoDB
-                const expirationTime = Date.now() + timer * 60 * 1000;
-                await Captcha.findOneAndUpdate(
-                    { userId: interaction.user.id },
-                    { captchaText, expirationTime, captchaPath },
-                    { upsert: true }
-                );
-
-                // Set a new timeout for the new CAPTCHA
-                setTimeout(async () => {
-                    const expiredCaptcha = await Captcha.findOne({ userId: interaction.user.id });
-                    if (expiredCaptcha && Date.now() >= expiredCaptcha.expirationTime) {
-                        try {
-                            await unlink(expiredCaptcha.captchaPath);
-                        } catch (error) {
-                            console.error(`Failed to delete expired CAPTCHA image: ${error}`);
-                        }
-                        await Captcha.deleteOne({ userId: interaction.user.id });
-                    }
-                }, timer * 60 * 1000);
-
-                // Send new CAPTCHA to user
-                const answerButton = new ButtonBuilder()
-                    .setCustomId('solve_captcha')
-                    .setLabel('Answer')
-                    .setStyle(ButtonStyle.Success);
-
-                const newCaptchaButton = new ButtonBuilder()
-                    .setCustomId('new_captcha')
-                    .setLabel('New CAPTCHA')
-                    .setStyle(ButtonStyle.Secondary);
-
-                const buttonRow = new ActionRowBuilder().addComponents(answerButton, newCaptchaButton);
-
-                await interaction.update({
-                    content: `Here is your new CAPTCHA. You have ${timer} minutes to complete it.`,
-                    files: [{ attachment: captchaPath }],
-                    components: [buttonRow],
-                    ephemeral: true,
-                });
-            }
-
-            // Handle "Answer" button
-            else if (interaction.customId === 'solve_captcha') {
-                const captchaData = await Captcha.findOne({ userId: interaction.user.id });
-
-                if (!captchaData || Date.now() > captchaData.expirationTime) {
-                    await interaction.reply({ content: 'The CAPTCHA has expired. Please click the verify button again to start over.', ephemeral: true });
-                    if (captchaData && captchaData.captchaPath) {
-                        try {
-                            await unlink(captchaData.captchaPath);
-                        } catch (error) {
-                            console.error(`Failed to delete CAPTCHA image: ${error}`);
-                        }
-                        await Captcha.deleteOne({ userId: interaction.user.id });
-                    }
-                    return;
-                }
 
                 const modal = new ModalBuilder()
                     .setCustomId('captcha_modal')
@@ -261,7 +51,7 @@ module.exports = {
                 await showCaptchaModalWithRetry(interaction, modal);
             }
 
-            // Handle "Retry" button
+            // Handle retry button
             else if (interaction.customId === 'retry_captcha') {
                 const modal = new ModalBuilder()
                     .setCustomId('captcha_modal')
@@ -280,6 +70,7 @@ module.exports = {
 
             if (!guildConfig) {
                 await interaction.reply({ content: 'Configuration not found. Please contact an administrator.', ephemeral: true });
+                delete activeVerification[interaction.user.id]; // Stop verification if guild config is missing
                 return;
             }
 
@@ -293,6 +84,7 @@ module.exports = {
                     }
                     await Captcha.deleteOne({ userId: interaction.user.id });
                 }
+                delete activeVerification[interaction.user.id]; // Stop verification if CAPTCHA expired
                 return;
             }
 
@@ -305,30 +97,21 @@ module.exports = {
                 }
                 await Captcha.deleteOne({ userId: interaction.user.id });
 
-                try {
-                    // Assign all verified roles to the member
-                    await interaction.member.roles.add(guildConfig.verifiedRoleIds);
-                    await interaction.reply({ content: 'You have been verified!', ephemeral: true });
+                // Assign roles and mark the user as verified
+                await interaction.member.roles.add(guildConfig.verifiedRoleIds);
+                isVerified = true;
+                await interaction.reply({ content: 'You have been verified!', ephemeral: true });
+                delete activeVerification[interaction.user.id]; // End active verification
 
-                    // Log the verification event
-                    const verificationLog = new VerificationLog({
-                        userId: interaction.user.id,
-                        username: interaction.user.username,
-                        discriminator: interaction.user.discriminator,
-                        guildId: interaction.guild.id,
-                        guildName: interaction.guild.name,
-                    });
-                    await verificationLog.save();
-
-                    console.log(`User ${interaction.user.tag} has been verified in server "${interaction.guild.name}" (ID: ${interaction.guild.id})`);
-                } catch (error) {
-                    if (error.code === 50013) {
-                        await interaction.reply({ content: 'I do not have permission to assign the verified roles. Please contact a server administrator.', ephemeral: true });
-                    } else {
-                        console.error('Failed to assign roles:', error);
-                        await interaction.reply({ content: 'An error occurred while assigning your roles. Please try again later.', ephemeral: true });
-                    }
-                }
+                // Log the verification event
+                const verificationLog = new VerificationLog({
+                    userId: interaction.user.id,
+                    username: interaction.user.username,
+                    discriminator: interaction.user.discriminator,
+                    guildId: interaction.guild.id,
+                    guildName: interaction.guild.name,
+                });
+                await verificationLog.save();
             } else {
                 await interaction.reply({ content: 'Incorrect CAPTCHA. Please try again.', ephemeral: true });
             }
