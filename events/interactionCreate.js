@@ -1,143 +1,3 @@
-// events/interactionCreate.js
-
-const {
-    ModalBuilder,
-    TextInputBuilder,
-    TextInputStyle,
-    ActionRowBuilder,
-    InteractionType,
-    ButtonBuilder,
-    ButtonStyle,
-    PermissionFlagsBits,
-} = require('discord.js');
-const { unlink } = require('fs/promises');
-const Captcha = require('../models/captcha');
-const GuildConfig = require('../models/guildConfig');
-const VerificationLog = require('../models/verificationLog'); // Import the VerificationLog model
-const { generateCaptchaText, generateCaptchaImage } = require('../utils/captchaGenerator');
-
-let isVerified = false; // Global flag to track if the user has been verified
-let activeVerification = {}; // Object to track active verification sessions per user
-let userRetryCount = {}; // Track retry counts for rate limiting
-
-// Rate limit settings
-const retryLimit = 5;
-const retryWindow = 60000; // 1 minute in milliseconds
-
-// Function to check if the user is still in the guild
-async function isUserInGuild(guild, userId) {
-    try {
-        const member = await guild.members.fetch(userId);
-        return !!member;
-    } catch (error) {
-        return false; // User is no longer in the guild
-    }
-}
-
-// Retry request logic with user in guild check and active verification status
-async function retryRequest(func, interaction, maxAttempts = 5, delay = 2000) {
-    let attempt = 0;
-    const userId = interaction.user.id;
-    const guild = interaction.guild;
-
-    while (attempt < maxAttempts && !isVerified && activeVerification[userId]) {
-        // Check if user is still in the server
-        const isInGuild = await isUserInGuild(guild, userId);
-        if (!isInGuild) {
-            console.log(`User ${interaction.user.tag} left the server. Stopping retries.`);
-            delete activeVerification[userId]; // Remove from active verification
-            return; // Stop retrying if the user left the server
-        }
-
-        try {
-            // Check if the user has already been verified
-            const guildConfig = await GuildConfig.findOne({ guildId: interaction.guild.id });
-            if (!guildConfig) return;
-
-            const hasVerifiedRole = guildConfig.verifiedRoleIds.some(roleId => interaction.member.roles.cache.has(roleId));
-            if (hasVerifiedRole) {
-                console.log(`User ${interaction.user.tag} is already verified. Stopping retries.`);
-                isVerified = true; // Set verified flag to true
-                delete activeVerification[userId]; // Remove from active verification
-                return; // Stop retrying
-            }
-
-            return await func(); // Try executing the passed function
-        } catch (error) {
-            attempt++;
-            console.error(`Attempt ${attempt} failed, retrying...`, error);
-
-            // For API unavailability or other retryable errors (503)
-            if (error.status === 503 && !isVerified) {
-                await new Promise(resolve => setTimeout(resolve, delay)); // Delay before retry
-            } else {
-                throw error; // Non-retryable errors, throw them out
-            }
-        }
-    }
-
-    // Show Retry button if max attempts are exceeded
-    if (attempt >= maxAttempts) {
-        console.log(`Max retries exceeded for user ${interaction.user.tag}. Showing Retry button.`);
-        await interaction.reply({
-            content: 'The verification service is temporarily unavailable. Please click "Retry" to try again.',
-            ephemeral: true,
-            components: [
-                new ActionRowBuilder().addComponents(
-                    new ButtonBuilder()
-                        .setCustomId('retry_captcha')
-                        .setLabel('Retry')
-                        .setStyle(ButtonStyle.Primary)
-                )
-            ]
-        });
-    }
-    throw new Error('Max retries exceeded, user left, or user has been verified');
-}
-
-// Function to show CAPTCHA modal with retry logic
-async function showCaptchaModalWithRetry(interaction, modal) {
-    try {
-        // Implement rate-limiting on retry
-        const userId = interaction.user.id;
-        if (!userRetryCount[userId]) userRetryCount[userId] = { count: 0, lastAttempt: Date.now() };
-        const userRetries = userRetryCount[userId];
-
-        if (userRetries.count >= retryLimit && (Date.now() - userRetries.lastAttempt) < retryWindow) {
-            return interaction.reply({
-                content: 'You have attempted to verify too many times. Please wait and try again later.',
-                ephemeral: true,
-            });
-        }
-
-        // Reset retry counter after the retry window
-        if ((Date.now() - userRetries.lastAttempt) >= retryWindow) {
-            userRetries.count = 0;
-        }
-
-        userRetries.count++;
-        userRetries.lastAttempt = Date.now();
-
-        await retryRequest(() => interaction.showModal(modal), interaction, retryLimit, 2000); // Limited retries
-    } catch (error) {
-        console.error('Failed to show CAPTCHA modal:', error);
-        if (!isVerified) { // Only show retry button if the user is not verified
-            await interaction.reply({
-                content: 'The verification service is currently unavailable. Please click "Retry" to try again.',
-                ephemeral: true,
-                components: [
-                    new ActionRowBuilder().addComponents(
-                        new ButtonBuilder()
-                            .setCustomId('retry_captcha')
-                            .setLabel('Retry')
-                            .setStyle(ButtonStyle.Primary)
-                    )
-                ]
-            });
-        }
-    }
-}
-
 module.exports = {
     name: 'interactionCreate',
     async execute(interaction, client) {
@@ -156,14 +16,6 @@ module.exports = {
         else if (interaction.isButton()) {
             const userId = interaction.user.id;
 
-            // Prevent race condition by checking if verification is already active
-            if (activeVerification[userId]) {
-                return interaction.reply({
-                    content: 'You already have an active verification process. Please complete it before starting another.',
-                    ephemeral: true,
-                });
-            }
-
             // Mark the user as actively verifying
             activeVerification[userId] = true;
 
@@ -174,16 +26,6 @@ module.exports = {
                 if (!guildConfig) {
                     await interaction.reply({ content: 'Configuration not found. Please contact an administrator.', ephemeral: true });
                     delete activeVerification[userId]; // End session if configuration fails
-                    return;
-                }
-
-                // Check for bot permissions before assigning roles
-                if (!interaction.guild.me.permissions.has(PermissionFlagsBits.ManageRoles)) {
-                    await interaction.reply({
-                        content: 'I do not have permission to assign the verified roles. Please contact a server administrator.',
-                        ephemeral: true,
-                    });
-                    delete activeVerification[userId];
                     return;
                 }
 
